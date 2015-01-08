@@ -40,7 +40,7 @@ import pyscf.fci
 def make_head(finp, mol, ncsf, ndet, norb, csf_sum,
               cutoff_g2q=0.0025, cutoff_d2c=0.025):
     finp.write("'ncsf=%d ndet= %d norb= %d" % (ncsf, ndet, norb))
-    finp.write("csf_sum=%12.9f cutoff_g2q=%f cutoff_d2c=0.025'  title\n" %
+    finp.write("csf_sum=%12.9f cutoff_g2q=%f cutoff_d2c=%f'  title\n" %
                (csf_sum, cutoff_g2q, cutoff_d2c))
     finp.write('''1837465927472523                         irn
 0 1                                      iperiodic,ibasis
@@ -64,55 +64,127 @@ def make_head(finp, mol, ncsf, ndet, norb, csf_sum,
         finp.write('%f %f %f' % tuple(coord))
         finp.write('%d          ((cent(k,i),k=1,3),i=1,ncent)\n' % i)
 
-def make_det(finp, mol, mo, ci, norb, nelec, tol=.1):
+def make_det(finp, mol, mo, ci, norb, nelec, tol=.01):
     if isinstance(nelec, int):
         nelecb = (nelec - mol.spin) / 2
         neleca = nelec - nelecb
     else:
         neleca, nelecb = nelec
+    assert(ci.ndim == 2)
     cidx = numpy.where(abs(ci)>tol)
-    ncsf = ci.size
     ndet = ci.size
+    ncsf = len(cidx[0])
 
     finp.write("'* Determinantal section'\n")
     finp.write('0 0 tm          inum_orb,iorb_used,iorb_format\n')
     finp.write('%d  %d  %d      ndet,nbasis,norb\n' %
                (ndet, mol.nao_nr(), norb))
-#FIXME ns np nd
-    finp.write('2   2  4 4 4   1  0 0 0  1 1 1 1 1   0  0 0 0  0 0 0 0 0  0 0 0 0 0 0 0  0  0 0 0  0 0 0 0 0 n1s...4pz,sa,pa,da\n')
-    nmo = mo.shape[1]
-    for i in range(nmo):
+    for ia in range(mol.natm):
+# 2 1s , 2 2s, 4 2px 4 2py 4 2pz 1 3s 0 3px 3py 3pz
+# 2   2  4 4 4   1  0 0 0  1 1 1 1 1   0  0 0 0  0 0 0 0 0  0 0 0 0 0 0 0  0  0 0 0  0 0 0 0 0 n1s...4pz,sa,pa,da
+        lcounts = [0 for i in range(5)] # up to g function
+        for ib in range(mol.nbas):
+            if mol.atom_of_bas(ib) == ia:
+                l = mol.angular_of_bas(ib)
+                lcounts[l] += 1
+        for l, li in enumerate(lcounts):
+            finp.write('%s   ' % (' '.join([str(li)]*(l*2+1))))
+        finp.write(' n1s...4pz,sa,pa,da\n')  # (*)
+
+    if isinstance(mo, numpy.ndarray) and mo.ndim == 2:
+        nao = mo.shape[0]
+        mo = (mo,mo)
+    else:
+        nao = mo[0].shape[0]
+    label = []
+    for ib in range(mol.nbas):
+        ia = mol.atom_of_bas(ib)
+        l = mol.angular_of_bas(ib)
+        nc = mol.nctr_of_bas(ib)
+        for n in range(nc):
+            for m in range(-l, l+1):
+                label.append((ia, l, n, m))
+    d_score = {0: 0, 2: 1, -2: 2, 1: 3, -1: 4}
+    def ordering(bf1, bf2):
+        if label[bf1][0] != label[bf2][0]:
+            return label[bf1][0] - label[bf2][0]
+        if label[bf1][1] != label[bf2][1]:
+            return label[bf1][1] - label[bf2][1]
+        if label[bf1][3] != label[bf2][3]:
+            m1 = label[bf1][3]
+            m2 = label[bf2][3]
+            if l < 2:
+                return m1 - m2
+            elif l == 2:
+                return d_score[m1] - d_score[m2]
+            else:
+# order as l ,-l, (l-1), -(l-1), ...
+                if abs(m1) == abs(m2):
+                    return -m1 - -m2
+                else:
+                    return -abs(m1) - -abs(m2)
+        return bf1 - bf2
+    idx = sorted(range(nao), cmp=ordering)
+# the order depends on another flag numr, if numr =0 or 1, using the order of (*)
+# reordering the MOs, to s s s s s..., px px px px px px, ... py py py py py
+    for i in range(norb):
         finp.write('%s ((coef(j,i),j=1,nbasis),i=1,norb)\n' %
-                   ' '.join(map(str, mo[:,i])))
-#FIXME exp of STO
-    finp.write('??? exponential of STO,???  (zex(i),i=1,nbasis)\n')
+                   ' '.join(map(str, mo[0][idx,i])))
+        finp.write('%s ((coef(j,i),j=1,nbasis),i=1,norb)\n' %
+                   ' '.join(map(str, mo[1][idx,i])))
+
+#FIXME exp of STO, for alpha beta, using diff orbital indices
+    finp.write('??? STO exps???  (zex(i),i=1,nbasis)\n')
+
     def str2orbidx(string):
         bstring = bin(string)
         occlst = []
-        for i in range(norb):
-            if bstring[i] == '1':
-                occlst.append(i+1)
+        for i,s in enumerate(bstring):
+            if s == '1':
+                occlst.append(i)
         return occlst
-    finp.write('%s (csf_coef(icsf),icsf=1,ncsf)\n' % ' '.join(map(str, ci[cidx])))
-    for k in range(ndet):
-#FIXME label_det?
+    for k in range(ncsf):
         # (iworbd(iel,idet),iel=1,nelec), label_det(idet)
         s = pyscf.fci.cistring.addr2str(norb, neleca, cidx[0][k])
-        finp.write('%s  ' % ' '.join(map(str, str2orbidx(s))))
+        finp.write('%s  ' % ' '.join(map(lambda x:str(x*2), str2orbidx(s))))
         s = pyscf.fci.cistring.addr2str(norb, nelecb, cidx[1][k])
-        finp.write('%s  ' % ' '.join(map(str, str2orbidx(s))))
-        finp.write('%d\n' % i)
+        finp.write('%s  ' % ' '.join(map(lambda x:str(x*2+1), str2orbidx(s))))
+#label_det is never used, set to 0
+        finp.write('%d\n' % 0)
     finp.write('%d      ncsf\n' % ncsf)
+    finp.write('%s      (csf_coef(icsf),icsf=1,ncsf)\n' %
+               ' '.join(map(str, ci[cidx])))
 #1.00000000 -0.75690096 -0.56812240 -0.37934694 0.24317056 0.40655818 -0.06949017 -0.00390204 -0.22953891 0.18572625 0.09740735 -0.35067648 0.00031633 -0.00008407 -0.00483767 -0.00351984 (csf_coef(icsf),icsf=1,ncsf)
     finp.write('%s      (ndet_in_csf(icsf),icsf=1,ncsf)\n' % ('1 '*ncsf))
     for i in range(ncsf):
-        finp.write('%d\n' i)    # index
-        finp.write('1\n')       # coeff
+        finp.write('%d\n' % (i+1)) # index
+        finp.write('1.\n')         # coeff for symm-adapted csf basis
 
-def make_champ_input(inputname, casscf):
-    make_head(finp, mol, ncsf, ndet, norb, csf_sum,
-              cutoff_g2q=0.0025, cutoff_d2c=0.025)
-    make_det(finp, mol, mo, casscf.ci, ncsf, ndet, casscf.ncas)
+# put 1 1 1 1,..., here
+#orbitals
+# symmetry
+#1 2 1 3 4 2 1 6 5 2 3 4 1 2 6 5 1 2 3 4 7 8 9 10 1 6 5 2 1 1 1 1 2 2 2 2 6 6 5 5 3 3 4 4
+# end
+
+def make_champ_input(inputname, casscf, tol=.01):
+    with open(inputname, 'w') as finp:
+        cidx = numpy.where(abs(casscf.ci)>tol)
+        ncsf = casscf.ci.size
+        ndet = len(cidx[0])
+        norb = casscf.ncas
+        csf_sum = 0.987654321
+        ncore = casscf.ncore
+        if isinstance(ncore, int):
+            nocc = ncore + casscf.ncas
+            mo = casscf.mo_coeff[:,ncore:nocc]
+        else:
+            nocc = (ncore[0] + casscf.ncas, ncore[1] + casscf.ncas)
+            mo = (casscf.mo_coeff[0][:,ncore[0]:nocc[0]],
+                  casscf.mo_coeff[1][:,ncore[1]:nocc[1]])
+        make_head(finp, mol, ncsf, ndet, norb, csf_sum,
+                  cutoff_g2q=0.0025, cutoff_d2c=0.025)
+        make_det(finp, mol, mo, casscf.ci, casscf.ncas,
+                 casscf.nelecas, tol)
 
 if __name__ == '__main__':
     from pyscf import gto
@@ -120,10 +192,10 @@ if __name__ == '__main__':
     from pyscf import mcscf
     mol = gto.Mole()
     mol.build(
-        verbose = 5
+        verbose = 0,
         atom = [
             ["O", (0., 0.,  0.7)],
-            ["O", (0., 0., -0.7)],]
+            ["O", (0., 0., -0.7)],],
 
         basis = 'cc-pvdz',
         spin = 2,
@@ -132,7 +204,7 @@ if __name__ == '__main__':
     mf = scf.UHF(mol)
     mf.scf()
 
-    mc = mcscf.CASSCF(mol, m, 4, (4,2))
+    mc = mcscf.CASSCF(mol, mf, 4, (4,2))
     mc.mc1step()
 
     make_champ_input('example.inp', mc)
