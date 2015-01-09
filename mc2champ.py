@@ -103,7 +103,7 @@ def make_det(finp, mc, cidx):
         for ib in range(mol.nbas):
             if mol.atom_of_bas(ib) == ia:
                 l = mol.angular_of_bas(ib)
-                lcounts[l] += 1
+                lcounts[l] += mol.nctr_of_bas(ib)
         for l, li in enumerate(lcounts):
             finp.write('%s   ' % (' '.join([str(li)]*(l*2+1))))
         finp.write(' n1s...4pz,sa,pa,da\n')  # (*)
@@ -122,6 +122,8 @@ def make_det(finp, mc, cidx):
             return label[bf1][0] - label[bf2][0]
         if label[bf1][1] != label[bf2][1]:
             return label[bf1][1] - label[bf2][1]
+
+        l = label[bf1][1]
         if label[bf1][3] != label[bf2][3]:
             m1 = label[bf1][3]
             m2 = label[bf2][3]
@@ -141,10 +143,13 @@ def make_det(finp, mc, cidx):
 # if numr =0 or 1, using the order of (*), otherwise, group the AOs
 # reordering the MOs, to s s s s s..., px px px px px px, ... py py py py py
     for i in range(nmo):
-        finp.write('%s ((coef(j,i),j=1,nbasis),i=1,norb)\n' %
-                   ' '.join(map(str, mo[0][idx,i])))
-        finp.write('%s ((coef(j,i),j=1,nbasis),i=1,norb)\n' %
-                   ' '.join(map(str, mo[1][idx,i])))
+        if i == 0:
+            finp.write('%s     ((coef(j,i),j=1,nbasis),i=1,norb)\n' %
+                       ' '.join(map(str, mo[0][idx,i])))
+        else:
+            finp.write('%s\n' %
+                       ' '.join(map(str, mo[0][idx,i])))
+        finp.write('%s\n' % ' '.join(map(str, mo[1][idx,i])))
 
 #FIXME exp of STO, for alpha beta, using diff orbital indices
     finp.write('??? STO exps???  (zex(i),i=1,nbasis)\n')
@@ -154,14 +159,14 @@ def make_det(finp, mc, cidx):
         occlst = []
         for i,s in enumerate(bstring):
             if s == '1':
-                occlst.append(ncore+i+1)
-        return range(1,ncore+1) + occlst
+                occlst.append(ncore+i)
+        return range(0,ncore) + occlst
     for k in range(ncsf):
         s = pyscf.fci.cistring.addr2str(mc.ncas, neleca, cidx[0][k])
-        finp.write('%s    ' % ' '.join(map(lambda x:str(x*2),
+        finp.write('%s    ' % ' '.join(map(lambda x:str(x*2+1),
                                            str2orbidx(s,ncore[0]))))
         s = pyscf.fci.cistring.addr2str(mc.ncas, nelecb, cidx[1][k])
-        finp.write('%s    ' % ' '.join(map(lambda x:str(x*2+1),
+        finp.write('%s    ' % ' '.join(map(lambda x:str(x*2+2),
                                            str2orbidx(s,ncore[1]))))
         if k == ncsf-1:
             finp.write('%d (iworbd(iel,idet),iel=1,nelec), label_det(idet)\n' % 0)
@@ -195,9 +200,11 @@ if __name__ == '__main__':
     from pyscf import gto
     from pyscf import scf
     from pyscf import mcscf
+    from pyscf.tools import dump_mat
     mol = gto.Mole()
     mol.build(
-        verbose = 0,
+        verbose = 5,
+        output = 'o2.out',
         atom = [
             ["O", (0., 0.,  0.7)],
             ["O", (0., 0., -0.7)],],
@@ -213,3 +220,14 @@ if __name__ == '__main__':
     mc.mc1step()
 
     make_champ_input('example.inp', mc)
+
+    mol.stdout.write('\nCASSCF result\n')
+    mol.stdout.write('MO coefficients for alpha\n')
+    label = ['%d%3s %s%-4s' % x for x in mol.spheric_labels()]
+    dump_mat.dump_rec(mol.stdout, mc.mo_coeff[0], label, start=1)
+    mol.stdout.write('MO coefficients for beta\n')
+    label = ['%d%3s %s%-4s' % x for x in mol.spheric_labels()]
+    dump_mat.dump_rec(mol.stdout, mc.mo_coeff[1], label, start=1)
+
+    mol.stdout.write('\nCI coefficients\n')
+    dump_mat.dump_rec(mol.stdout, mc.ci, start=1)
