@@ -36,6 +36,7 @@
 
 import numpy
 import pyscf.fci
+import pyscf.lib.parameters as param
 
 def make_head(finp, mc, cidx, csf_sum,
               cutoff_g2q=0.0025, cutoff_d2c=0.025):
@@ -62,60 +63,39 @@ def make_head(finp, mc, cidx, csf_sum,
                (mol.nelectron, (mol.nelectron+mol.spin)/2))
     finp.write("'* Geometry section'\n")
     finp.write('3               ndim\n')
-    finp.write('%d %d           nctype,ncent\n' % (mol.natm,mol.natm))
+    nctype = len(mol.basis)
+    cpair = zip(sorted(mol.basis.keys()), range(1,nctype+1))
+    ctypemap = dict(cpair)
+    finp.write('%d %d           nctype,ncent\n' % (nctype,mol.natm))
     finp.write('%s (iwctype(i),i=1,ncent)\n' %
-               ' '.join(map(str, range(1,mol.natm+1)))) #TODO: add symm-eq centers
+               ' '.join(['%d'%ctypemap[mol.symbol_of_atm(i)] for i in range(mol.natm)]))
     finp.write('%s (znuc(i),i=1,nctype)\n' %
-               ' '.join(map(str, [mol.charge_of_atm(i) for i in range(mol.natm)])))
+               ' '.join(['%f'%param.NUC[i[0]] for i in cpair]))
     for i in range(mol.natm):
         coord = mol.coord_of_atm(i)
-        finp.write('%f %f %f' % tuple(coord))
-        finp.write('%d          ((cent(k,i),k=1,3),i=1,ncent)\n' % i)
+        finp.write('%f %f %f ' % tuple(coord))
+        finp.write(' %d          ((cent(k,i),k=1,3),i=1,ncent)\n' %
+                   ctypemap[mol.symbol_of_atm(i)])
 
-def make_det(finp, mc, cidx):
-    mol = mc.mol
-    if isinstance(mc.ncore, int):
-        ncore = (mc.ncore,mc.ncore)
+def label_sto(finp, mol, shell_ids):
+    if shell_ids is None:
+        finp.write(' ?? n1s...4pz,sa,pa,da\n')
     else:
-        ncore = mc.ncore
-    if isinstance(mc.nelecas, int):
-        nelecb = (mc.nelecas - mol.spin) / 2
-        neleca = mc.nelecas - nelecb
-    else:
-        neleca, nelecb = mc.nelecas
-    if isinstance(mc.mo_coeff, numpy.ndarray) and mc.mo_coeff.ndim == 2:
-        nao,nmo = mc.mo_coeff.shape
-        mo = (mc.mo_coeff, mc.mo_coeff)
-    else:
-        nao,nmo = mc.mo_coeff[0].shape
-        mo = mc.mo_coeff
-    assert(mc.ci.ndim == 2)
-    ndet = ncsf = len(cidx[0])
-
-    finp.write("'* Determinantal section'\n")
-    finp.write('0 0 tm          inum_orb,iorb_used,iorb_format\n')
-    finp.write('%d  %d  %d      ndet,nbasis,nmo\n' %
-               (ndet, mol.nao_nr(), nmo))
-    for ia in range(mol.natm):
+        for symb in sorted(mol.basis.keys()):
 # 2 1s , 2 2s, 4 2px 4 2py 4 2pz 1 3s 0 3px 3py 3pz
 # 2   2  4 4 4   1  0 0 0  1 1 1 1 1   0  0 0 0  0 0 0 0 0  0 0 0 0 0 0 0  0  0 0 0  0 0 0 0 0 n1s...4pz,sa,pa,da
-        lcounts = [0 for i in range(5)] # up to g function
-        for ib in range(mol.nbas):
-            if mol.atom_of_bas(ib) == ia:
-                l = mol.angular_of_bas(ib)
-                lcounts[l] += mol.nctr_of_bas(ib)
-        for l, li in enumerate(lcounts):
-            finp.write('%s   ' % (' '.join([str(li)]*(l*2+1))))
-        finp.write(' n1s...4pz,sa,pa,da\n')  # (*)
+            sh = shell_ids[symb]
+            lcounts = [[0 for l in range(6)] for shell in range(7)] # up to g function
+            for n, bi in enumerate(mol.basis[symb]):
+                l = bi[0]
+                lcounts[sh[n]][l] += len(bi[1]) - 1
+            for lsh, shcount in enumerate(lcounts):
+                for l, li in enumerate(shcount):
+                    if l+1 <= lsh:
+                        finp.write('%s   ' % (' '.join([str(li)]*(l*2+1))))
+            finp.write(' n1s...4pz,sa,pa,da\n')  # (*)
 
-    label = []
-    for ib in range(mol.nbas):
-        ia = mol.atom_of_bas(ib)
-        l = mol.angular_of_bas(ib)
-        nc = mol.nctr_of_bas(ib)
-        for n in range(nc):
-            for m in range(-l, l+1):
-                label.append((ia, l, n, m))
+def forder(label):
     d_score = {0: 0, 2: 1, -2: 2, 1: 3, -1: 4}
     def ordering(bf1, bf2):
         if label[bf1][0] != label[bf2][0]:
@@ -138,7 +118,61 @@ def make_det(finp, mc, cidx):
                 else:
                     return -abs(m1) - -abs(m2)
         return bf1 - bf2
-    idx = sorted(range(nao), cmp=ordering)
+    return ordering
+
+def make_det(finp, mc, cidx, blabel):
+    mol = mc.mol
+    shell_ids, zexps = blabel
+    if isinstance(mc.ncore, int):
+        ncore = (mc.ncore,mc.ncore)
+    else:
+        ncore = mc.ncore
+    if isinstance(mc.nelecas, int):
+        nelecb = (mc.nelecas - mol.spin) / 2
+        neleca = mc.nelecas - nelecb
+    else:
+        neleca, nelecb = mc.nelecas
+    if isinstance(mc.mo_coeff, numpy.ndarray) and mc.mo_coeff.ndim == 2:
+        nao,nmo = mc.mo_coeff.shape
+        mo = (mc.mo_coeff, mc.mo_coeff)
+    else:
+        nao,nmo = mc.mo_coeff[0].shape
+        mo = mc.mo_coeff
+    assert(mc.ci.ndim == 2)
+    ndet = ncsf = len(cidx[0])
+
+    finp.write("'* Determinantal section'\n")
+    finp.write('0 0 tm          inum_orb,iorb_used,iorb_format\n')
+    finp.write('%d  %d  %d      ndet,nbasis,nmo\n' %
+               (ndet, mol.nao_nr(), nmo))
+    label_sto(finp, mol, shell_ids)
+
+    label = []
+    shell_count = 0
+    for ib in range(mol.nbas):
+        ia = mol.atom_of_bas(ib)
+        l = mol.angular_of_bas(ib)
+        nc = mol.nctr_of_bas(ib)
+        for n in range(nc):
+            for m in range(-l, l+1):
+                label.append((ia, l, n, m))
+            shell_count += 1
+    idx = sorted(range(nao), cmp=forder(label))
+    for symb, bs in mol.basis.items():
+        label = []
+        shell_count = 0
+        nbf = 0
+        for ib in bs:
+            l = ib[0]
+            nc = len(ib[1]) - 1
+            for n in range(nc):
+                for m in range(-l, l+1):
+                    label.append((1, l, n, m, shell_count))
+                shell_count += 1
+            nbf += (l*2+1)*nc
+        idx = sorted(range(nbf), cmp=forder(label))
+        iwrwf = [str(label[i][4]+1) for i in idx]
+        finp.write('%s   (iwrwf(ib),ib=1,nbastyp)\n' % ' '.join(iwrwf))
 # the order depends on another flag numr
 # if numr =0 or 1, using the order of (*), otherwise, group the AOs
 # reordering the MOs, to s s s s s..., px px px px px px, ... py py py py py
@@ -151,8 +185,12 @@ def make_det(finp, mc, cidx):
                        ' '.join(map(str, mo[0][idx,i])))
         finp.write('%s\n' % ' '.join(map(str, mo[1][idx,i])))
 
-#FIXME exp of STO, for alpha beta, using diff orbital indices
-    finp.write('??? STO exps???  (zex(i),i=1,nbasis)\n')
+    if zexps is None:
+        finp.write('??? STO exps???  (zex(i),i=1,nbasis)\n')
+    else:
+        for symb in sorted(mol.basis.keys()):
+            finp.write('%s  (zex(i),i=1,nbasis)\n' %
+                       ' '.join(map(str, zexps[symb])))
 
     def str2orbidx(string, ncore):
         bstring = bin(string)
@@ -188,13 +226,38 @@ def make_det(finp, mc, cidx):
 #1 2 1 3 4 2 1 6 5 2 3 4 1 2 6 5 1 2 3 4 7 8 9 10 1 6 5 2 1 1 1 1 2 2 2 2 6 6 5 5 3 3 4 4
 # end
 
-def make_champ_input(inputname, casscf, tol=.01):
+def make_champ_input(inputname, casscf, tol=.001, blabel=None):
     with open(inputname, 'w') as finp:
         cidx = numpy.where(abs(casscf.ci)>tol)
         csf_sum = 0.987654321
         make_head(finp, casscf, cidx, csf_sum,
                   cutoff_g2q=0.0025, cutoff_d2c=0.025)
-        make_det(finp, casscf, cidx)
+        make_det(finp, casscf, cidx, blabel)
+
+def parse_basis(bastr):
+    LMAP = {'S':0, 'P':1, 'D':2, 'F':3, 'G':4}
+    bs = []
+    bnow = None
+    shell_ids = []
+    zexps = []
+    for bline in bastr.split('\n'):
+        if bline.strip():
+            bdat = bline.split()
+            if len(bdat) == 6: # start a new STO-nG
+                bs.append(bnow)
+                l = LMAP[bdat[1][-1]]
+                zexp = float(bdat[3])
+                gexp = float(bdat[4])
+                gc   = float(bdat[5])
+                shell_ids.append(int(bdat[1][:-1]))
+                zexps.append(zexp)
+                bnow = [l, (gexp, gc)]
+            else:
+                gexp = float(bdat[3])
+                gc   = float(bdat[4])
+                bnow.append((gexp, gc))
+    bs.append(bnow)
+    return bs[1:], (shell_ids, zexps)
 
 if __name__ == '__main__':
     from pyscf import gto
@@ -219,7 +282,7 @@ if __name__ == '__main__':
     mc = mcscf.CASSCF(mol, mf, 4, (4,2))
     mc.mc1step()
 
-    make_champ_input('example.inp', mc)
+    make_champ_input('example.inp', mc, blabel=[None,None])
 
     mol.stdout.write('\nCASSCF result\n')
     mol.stdout.write('MO coefficients for alpha\n')
