@@ -31,7 +31,7 @@
 #       mc.mc1step()
 #
 #       import mc2champ
-#       mc2champ.make_champ_input('inputname', mc)
+#       mc2champ.make_champ_input('inputname', mc, blabel=[...])
 #
 
 import numpy
@@ -51,9 +51,9 @@ def make_head(finp, mc, cidx, csf_sum,
     finp.write("csf_sum=%12.9f cutoff_g2q=%f cutoff_d2c=%f'  title\n" %
                (csf_sum, cutoff_g2q, cutoff_d2c))
     finp.write('''1837465927472523                         irn
-0 1                                      iperiodic,ibasis
-0.5   -75.9   '  Hartrees'               hb,etrial,eunit
-10   100   1   100   0                   nstep,nblk,nblkeq,nconf,nconf_new
+0 1                                      iperiodic,ibasis\n''')
+    finp.write('''0.5   %.15g   '  Hartrees'    hb,etrial,eunit\n''' % mc.e_tot)
+    finp.write('''10   100   1   100   0                   nstep,nblk,nblkeq,nconf,nconf_new
 0    0    1    -2                        idump,irstar,isite,ipr
 6  1.  5.  1.  1.                        imetro delta,deltar,deltat fbias
 2 1 1 1 1 0 0 0 0                        idmc,ipq,itau_eff,iacc_rej,icross,icuspg,idiv_v,icut_br,icut_e
@@ -68,14 +68,14 @@ def make_head(finp, mc, cidx, csf_sum,
     ctypemap = dict(cpair)
     finp.write('%d %d           nctype,ncent\n' % (nctype,mol.natm))
     finp.write('%s (iwctype(i),i=1,ncent)\n' %
-               ' '.join(['%d'%ctypemap[mol.symbol_of_atm(i)] for i in range(mol.natm)]))
+               ' '.join(['%d'%ctypemap[mol.atom_symbol(i)] for i in range(mol.natm)]))
     finp.write('%s (znuc(i),i=1,nctype)\n' %
                ' '.join(['%f'%param.NUC[i[0]] for i in cpair]))
     for i in range(mol.natm):
-        coord = mol.coord_of_atm(i)
+        coord = mol.atom_coord(i)
         finp.write('%f %f %f ' % tuple(coord))
         finp.write(' %d          ((cent(k,i),k=1,3),i=1,ncent)\n' %
-                   ctypemap[mol.symbol_of_atm(i)])
+                   ctypemap[mol.atom_symbol(i)])
 
 def label_sto(finp, mol, shell_ids):
     if shell_ids is None:
@@ -150,9 +150,9 @@ def make_det(finp, mc, cidx, blabel):
     label = []
     shell_count = 0
     for ib in range(mol.nbas):
-        ia = mol.atom_of_bas(ib)
-        l = mol.angular_of_bas(ib)
-        nc = mol.nctr_of_bas(ib)
+        ia = mol.bas_atom(ib)
+        l = mol.bas_angular(ib)
+        nc = mol.bas_nctr(ib)
         for n in range(nc):
             for m in range(-l, l+1):
                 label.append((ia, l, n, m))
@@ -229,7 +229,7 @@ def make_det(finp, mc, cidx, blabel):
 def make_champ_input(inputname, casscf, tol=.001, blabel=None):
     with open(inputname, 'w') as finp:
         cidx = numpy.where(abs(casscf.ci)>tol)
-        csf_sum = 0.987654321
+        csf_sum = numpy.linalg.norm(casscf.ci[cidx])**2
         make_head(finp, casscf, cidx, csf_sum,
                   cutoff_g2q=0.0025, cutoff_d2c=0.025)
         make_det(finp, casscf, cidx, blabel)
@@ -281,6 +281,7 @@ if __name__ == '__main__':
 
     mc = mcscf.CASSCF(mol, mf, 4, (4,2))
     mc.mc1step()
+    mc.ci, mc.mo_coeff = mcscf.cas_natorb(mc)[:2]
 
     make_champ_input('example.inp', mc, blabel=[None,None])
 
