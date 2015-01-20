@@ -63,8 +63,8 @@ def make_head(finp, mc, cidx, csf_sum,
                (mol.nelectron, (mol.nelectron+mol.spin)/2))
     finp.write("'* Geometry section'\n")
     finp.write('3               ndim\n')
-    nctype = len(mol.basis)
-    cpair = zip(sorted(mol.basis.keys()), range(1,nctype+1))
+    nctype = len(mol._basis)
+    cpair = zip(sorted(mol._basis.keys()), range(1,nctype+1))
     ctypemap = dict(cpair)
     finp.write('%d %d           nctype,ncent\n' % (nctype,mol.natm))
     finp.write('%s (iwctype(i),i=1,ncent)\n' %
@@ -78,15 +78,13 @@ def make_head(finp, mc, cidx, csf_sum,
                    ctypemap[mol.atom_symbol(i)])
 
 def label_sto(finp, mol, shell_ids):
-    if shell_ids is None:
-        finp.write(' ?? n1s...4pz,sa,pa,da\n')
-    else:
-        for symb in sorted(mol.basis.keys()):
+    if shell_ids:
+        for symb in sorted(mol._basis.keys()):
 # 2 1s , 2 2s, 4 2px 4 2py 4 2pz 1 3s 0 3px 3py 3pz
 # 2   2  4 4 4   1  0 0 0  1 1 1 1 1   0  0 0 0  0 0 0 0 0  0 0 0 0 0 0 0  0  0 0 0  0 0 0 0 0 n1s...4pz,sa,pa,da
             sh = shell_ids[symb]
             lcounts = [[0 for l in range(6)] for shell in range(7)] # up to g function
-            for n, bi in enumerate(mol.basis[symb]):
+            for n, bi in enumerate(mol._basis[symb]):
                 l = bi[0]
                 lcounts[sh[n]][l] += len(bi[1]) - 1
             for lsh, shcount in enumerate(lcounts):
@@ -94,6 +92,8 @@ def label_sto(finp, mol, shell_ids):
                     if l+1 <= lsh:
                         finp.write('%s   ' % (' '.join([str(li)]*(l*2+1))))
             finp.write(' n1s...4pz,sa,pa,da\n')  # (*)
+    else:
+        finp.write(' ?? n1s...4pz,sa,pa,da\n')
 
 def forder(label):
     d_score = {0: 0, 2: 1, -2: 2, 1: 3, -1: 4}
@@ -120,9 +120,10 @@ def forder(label):
         return bf1 - bf2
     return ordering
 
-def make_det(finp, mc, cidx, blabel):
+def make_det(finp, mc, cidx, basis_label):
     mol = mc.mol
-    shell_ids, zexps = blabel
+    shell_ids = dict([(k,v[0]) for k, v in basis_label.items()])
+    zexps = dict([(k,v[1]) for k, v in basis_label.items()])
     if isinstance(mc.ncore, int):
         ncore = (mc.ncore,mc.ncore)
     else:
@@ -158,7 +159,7 @@ def make_det(finp, mc, cidx, blabel):
                 label.append((ia, l, n, m))
             shell_count += 1
     idx = sorted(range(nao), cmp=forder(label))
-    for symb, bs in mol.basis.items():
+    for symb, bs in mol._basis.items():
         label = []
         shell_count = 0
         nbf = 0
@@ -185,12 +186,12 @@ def make_det(finp, mc, cidx, blabel):
                        ' '.join(map(str, mo[0][idx,i])))
         finp.write('%s\n' % ' '.join(map(str, mo[1][idx,i])))
 
-    if zexps is None:
-        finp.write('??? STO exps???  (zex(i),i=1,nbasis)\n')
-    else:
-        for symb in sorted(mol.basis.keys()):
+    if zexps:
+        for symb in sorted(mol._basis.keys()):
             finp.write('%s  (zex(i),i=1,nbasis)\n' %
                        ' '.join(map(str, zexps[symb])))
+    else:
+        finp.write('??? STO exps???  (zex(i),i=1,nbasis)\n')
 
     def str2orbidx(string, ncore):
         bstring = bin(string)
@@ -226,7 +227,7 @@ def make_det(finp, mc, cidx, blabel):
 #1 2 1 3 4 2 1 6 5 2 3 4 1 2 6 5 1 2 3 4 7 8 9 10 1 6 5 2 1 1 1 1 2 2 2 2 6 6 5 5 3 3 4 4
 # end
 
-def make_champ_input(inputname, casscf, tol=.001, blabel=None):
+def make_champ_input(inputname, casscf, blabel, tol=.001):
     with open(inputname, 'w') as finp:
         cidx = numpy.where(abs(casscf.ci)>tol)
         csf_sum = numpy.linalg.norm(casscf.ci[cidx])**2
@@ -268,10 +269,9 @@ if __name__ == '__main__':
     mol.build(
         verbose = 5,
         output = 'o2.out',
-        atom = [
-            ["O", (0., 0.,  0.7)],
-            ["O", (0., 0., -0.7)],],
-
+        atom = '''
+            O  0 0  0.7
+            O  0 0 -0.7''',
         basis = 'cc-pvdz',
         spin = 2,
     )
@@ -280,18 +280,9 @@ if __name__ == '__main__':
     mf.scf()
 
     mc = mcscf.CASSCF(mol, mf, 4, (4,2))
-    mc.mc1step()
-    mc.ci, mc.mo_coeff = mcscf.cas_natorb(mc)[:2]
+    mc.natorb = True
+    mc.kernel()
+    mc.analyze()
 
-    make_champ_input('example.inp', mc, blabel=[None,None])
+    make_champ_input('example.inp', mc, {})
 
-    mol.stdout.write('\nCASSCF result\n')
-    mol.stdout.write('MO coefficients for alpha\n')
-    label = ['%d%3s %s%-4s' % x for x in mol.spheric_labels()]
-    dump_mat.dump_rec(mol.stdout, mc.mo_coeff[0], label, start=1)
-    mol.stdout.write('MO coefficients for beta\n')
-    label = ['%d%3s %s%-4s' % x for x in mol.spheric_labels()]
-    dump_mat.dump_rec(mol.stdout, mc.mo_coeff[1], label, start=1)
-
-    mol.stdout.write('\nCI coefficients\n')
-    dump_mat.dump_rec(mol.stdout, mc.ci, start=1)

@@ -5,7 +5,7 @@ from pyscf import lib
 import mc2champ
 from pyscf.tools import dump_mat
 
-cbasis, bextra = mc2champ.parse_basis('''
+cbasis = mc2champ.parse_basis('''
   11   1S      1             7.5000000         15333.6370468      0.000423192570
   11   1S      2                                2812.0556116      0.002381039318
   11   1S      3                                 787.3987734      0.009323817678
@@ -124,7 +124,7 @@ mol.build(
     atom = [
         ["C", (0., 0., -1.17405*lib.parameters.BOHR)],
         ["C", (0., 0.,  1.17405*lib.parameters.BOHR)],],
-    basis = {'C': cbasis },
+    basis = {'C': cbasis[0] },
     symmetry = 1,
 )
 
@@ -133,21 +133,10 @@ mf.scf()
 
 mc = mcscf.CASSCF(mol, mf, 8, 8)
 mo = mcscf.addons.sort_mo(mc, mf.mo_coeff, [3,4,5,6,7,8,9,11])
-mc.mc1step(mo)
-mc.fcisolver.conv_tol=1e-10
+mc.kernel(mo)
+mc.analyze()
 mc.cas_natorb_()
 
-mol.stdout.write('\nCASSCF result\n')
-mol.stdout.write('MO coefficients\n')
-label = ['%d%3s %s%-4s' % x for x in mol.spheric_labels()]
-dump_mat.dump_rec(mol.stdout, mc.mo_coeff, label, start=1)
+basis_label = {'C': cbasis[1]}
+mc2champ.make_champ_input('c2-example.inp', mc, basis_label)
 
-#mol.stdout.write('\nCI coefficients\n')
-#dump_mat.dump_rec(mol.stdout, mc.ci, start=1)
-
-from pyscf import fci
-ss = mcscf.addons.spin_square(mc)
-mol.stdout.write('\nS^2 = %f, 2S+1 = %f\n' % tuple(ss))
-
-blabel = ({'C': bextra[0]}, {'C':bextra[1]})
-mc2champ.make_champ_input('c2-example.inp', mc, blabel=blabel)
